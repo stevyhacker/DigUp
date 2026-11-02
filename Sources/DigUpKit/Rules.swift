@@ -12,6 +12,7 @@ public enum Rules {
     /// Folders never worth walking into. Hidden folders and bundles are skipped by the enumerator itself.
     static let skippedFolderNames: Set<String> = [
         "node_modules", "bower_components", "venv", "site-packages", "__pycache__", "DerivedData", "Pods", "Carthage",
+        "tmp", "Tmp", "TMP", "temp", "Temp", "TEMP",
     ]
 
     /// Any of these in a folder makes it a code project, where only screenshots are indexed.

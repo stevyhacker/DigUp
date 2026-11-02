@@ -40,4 +40,16 @@ import Testing
         #expect(report.leftOut[folder.path]?["inside a code project"] == 1)
         #expect(report.leftOut[folder.path]?["code or data file"] == 2)   // the two package.json files
     }
+
+    @Test func temporaryFoldersAreLeftOutUnlessChosen() throws {
+        try write("notes.md", "notes")
+        try write("tmp/draft.md", "draft")
+        try write("job/Temp/draft.md", "draft")
+        try write("templates/letter.md", "letter")   // only the exact names count
+        let report = Crawler.crawl([folder], options: IndexOptions())
+        #expect(names(report) == ["notes.md", "templates/letter.md"])
+        #expect(report.skippedFolders["developer folder"] == 2)
+        let chosen = Crawler.crawl([folder.appendingPathComponent("tmp")], options: IndexOptions())
+        #expect(names(chosen) == ["tmp/draft.md"])
+    }
 }
