@@ -450,6 +450,7 @@ nonisolated final class Engine: @unchecked Sendable {
     /// Folders whose changes don't concern the code index (what `Rules` keeps code search out of, by name).
     private static let codeNoise: Set<String> = [
         "node_modules", "bower_components", "venv", "site-packages", "__pycache__", "DerivedData", "Pods", "Carthage",
+        "tmp", "Tmp", "TMP", "temp", "Temp", "TEMP",
         "vendor", "Vendor", "third_party", "build", "Build", "dist", "out", "target", "obj", "coverage", "wandb",
         "mlruns", "lightning_logs",
     ]
