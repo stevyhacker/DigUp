@@ -174,9 +174,34 @@ public enum Rules {
 
     static func isProjectRoot(_ folder: String) -> Bool {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder) else { return false }
-        let set = Set(names)
-        return projectMarkers.contains(where: set.contains)
-            || names.contains { projectBundleExtensions.contains(($0 as NSString).pathExtension) }
+        return names.contains(where: isProjectMarker)
+    }
+
+    private static func isProjectMarker(_ name: String) -> Bool {
+        projectMarkers.contains(name) || projectBundleExtensions.contains((name as NSString).pathExtension)
+    }
+
+    /// Whether `path` is inside a code project found under `root`, where the crawl keeps only screenshots (`Crawler`). For
+    /// the folder watcher: a build's output there asks for a sync that finds nothing new. `root` itself doesn't make one:
+    /// a folder chosen on purpose is read whole, whatever markers it holds.
+    public static func isInsideProject(_ path: String, root: String) -> Bool {
+        guard FolderSelection.isInside(path, root) else { return false }
+        var folder = root
+        for part in path.dropFirst(root.count).split(separator: "/").dropLast() {
+            folder += "/" + part
+            if isProjectRoot(folder) { return true }
+        }
+        return false
+    }
+
+    /// Whether adding or removing `path` decides if its folder is a code project, and so what the crawl keeps of
+    /// everything around it, whatever its own type: it's a marker, and no other marker there makes the folder one anyway.
+    public static func decidesProject(_ path: String) -> Bool {
+        let name = (path as NSString).lastPathComponent
+        guard isProjectMarker(name) else { return false }
+        let folder = (path as NSString).deletingLastPathComponent
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []
+        return !names.contains { $0 != name && isProjectMarker($0) }
     }
 
     static let cameraPrefixes = ["img", "dsc", "pxl", "mvimg", "vid", "gopr", "dji", "photo", "whatsapp", "screenshot"]

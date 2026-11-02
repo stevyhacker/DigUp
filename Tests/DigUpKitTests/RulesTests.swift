@@ -209,6 +209,36 @@ import Testing
     }
     #endif
 
+    /// The same answer the crawl gives: only what's found under the chosen folder makes a project.
+    @Test func aProjectIsFoundBelowTheChosenFolder() throws {
+        let root = folder.appendingPathComponent("Chosen")
+        let project = root.appendingPathComponent("Work/site")
+        try FileManager.default.createDirectory(at: project.appendingPathComponent("dist/assets"),
+                                                withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Work/notes"),
+                                                withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: project.appendingPathComponent("package.json"))
+        let inside = { Rules.isInsideProject(root.path + "/" + $0, root: root.path) }
+        #expect(inside("Work/site/readme.md"))
+        #expect(inside("Work/site/dist/assets/hero.png"))
+        #expect(inside("Work/site/dist/not-yet-there/hero.png"))
+        #expect(!inside("Work/notes/plan.md"))
+        #expect(!inside("Work/site"))
+        #expect(!Rules.isInsideProject("/elsewhere/Work/site/readme.md", root: root.path))
+        // A folder chosen on purpose is read whole, whatever markers it holds.
+        #expect(!Rules.isInsideProject(project.path + "/readme.md", root: project.path))
+        #expect(Rules.isInsideProject(project.path + "/readme.md", root: root.path))
+
+        // The only marker decides, gone or not; with another one beside it, the folder is a project either way.
+        #expect(Rules.decidesProject(project.path + "/package.json"))
+        #expect(Rules.decidesProject(root.path + "/Work/notes/Cargo.toml"))
+        #expect(Rules.decidesProject(root.path + "/Work/notes/Notes.xcodeproj"))
+        #expect(!Rules.decidesProject(project.path + "/Cargo.toml"))
+        #expect(!Rules.decidesProject(project.path + "/Site.xcodeproj"))
+        #expect(!Rules.decidesProject(project.path + "/package-lock.json"))
+        #expect(!Rules.decidesProject(root.path + "/Work/notes/readme.md"))
+    }
+
     @Test func changesCountOnlyWhereTheCrawlGoes() {
         let home = "/Users/me"
         func walked(_ path: String, root: String = home, skipping excluded: [String] = []) -> Bool {
