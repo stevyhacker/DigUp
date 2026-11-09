@@ -58,12 +58,16 @@ extension MeasuredCosts.Speed {
 
     private static func ocrSeconds() -> Double? {
         guard let image = sampleScreen() else { return nil }
-        _ = OCR.text(in: image)   // Vision loads its models the first time
-        return (0..<2).map { _ in
+        // Vision loads its models the first time. A reader that gives no answer (`TextRecognition.reader`) has no
+        // speed to measure: nil, and the fixed costs stand.
+        guard OCR.text(in: image) != nil else { return nil }
+        var best: Double?
+        for _ in 0..<2 {
             let started = Date()
-            _ = OCR.text(in: image)
-            return Date().timeIntervalSince(started)
-        }.min()
+            guard OCR.text(in: image) != nil else { return nil }
+            best = min(best ?? .infinity, Date().timeIntervalSince(started))
+        }
+        return best
     }
 
     /// A made-up screenshot: 1440×900 with 30 lines of small text, like a window of notes.

@@ -73,8 +73,9 @@ extension ImageExtractor {
 extension OCR {
     static let isAvailable = false
 
-    /// No text recognition here yet: screenshots have their picture vector and their name.
-    static func text(ofImageAt url: URL) -> String { "" }
+    /// No text recognition here yet: screenshots have their picture vector and their name. (Never nil, which on macOS
+    /// says a reader gave no answer.)
+    static func text(ofImageAt url: URL) -> String? { "" }
 }
 
 /// Packed 8-bit RGB in memory: what stb decodes to and encodes from.

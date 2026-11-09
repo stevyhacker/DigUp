@@ -138,7 +138,8 @@ public final class Indexer {
     /// their first step (`IndexOptions.pdfStep` pages, `docStep` chunks) and stay `partial` for `finishLongFiles`.
     /// Per-file problems are recorded on the file; a dead worker or a settings mismatch stops the run (pending files stay
     /// pending, so the next run resumes). `shouldStop` is asked between batches: pausing, or new files that should go
-    /// first.
+    /// first. A screenshot or a scanned PDF whose text recognition gave no answer (`TextRecognition.reader`) stays
+    /// pending too, and its event says so: the run goes on with the next file, and the next run reads it again.
     @discardableResult
     public func run(limit: Int? = nil, only ids: Set<Int64>? = nil, shouldStop: () -> Bool = { false },
                     onEvent: (Event) -> Void = { _ in }) throws -> [String: Int] {
@@ -165,7 +166,9 @@ public final class Indexer {
         public let files: Int        // long files not finished yet, this one included until its last step
         public let path: String
         public let kind: FileKind
-        public let state: String     // "partial" until the file's last step, then "done"
+        /// "partial" until the file's last step, then "done". "pending": the step wasn't read, since text recognition
+        /// gave no answer, and waits for the next pass (the file itself stays partial).
+        public let state: String
         public let seconds: Double
         public let note: String?
     }
@@ -174,6 +177,8 @@ public final class Indexer {
     /// a step at a time. Each step is saved as one transaction, so stopping between steps (pausing, new files going
     /// first) loses nothing, and the next pass goes on from there. It runs once nothing is pending: a book's last
     /// pages matter less than everything else's first ones, and they take a while (0.04–0.2 s a page, 2026-10-09).
+    /// A step whose text recognition gave no answer isn't saved (its `Step` says "pending"): the file keeps its place,
+    /// the rest of its steps wait with it, and the next pass goes on from that step.
     @discardableResult
     public func finishLongFiles(shouldStop: () -> Bool = { false }, onStep: (Step) -> Void = { _ in }) throws
         -> [String: Int] {
@@ -196,10 +201,13 @@ public final class Indexer {
         var files = Set(jobs.map { $0.files[0].id }).count
         var states: [String: Int] = [:]
         var finished = Set<Int64>()
+        var unanswered = Set<Int64>()   // files with a step that text recognition gave no answer for
         try process(jobs, shouldStop: shouldStop) { index, job, results, seconds in
             let file = job.files[0]
             let (state, note) = results[0]
-            if state != "partial", finished.insert(file.id).inserted {
+            if state == Outcome.unanswered.state {
+                unanswered.insert(file.id)
+            } else if state != "partial", finished.insert(file.id).inserted {
                 states[state, default: 0] += 1
                 files -= 1
             }
@@ -207,7 +215,9 @@ public final class Indexer {
                         state: state, seconds: seconds, note: note))
         } skip: { job in
             // Finished sooner than its steps said: a document whose length was guessed, or a file that went unreadable.
-            finished.contains(job.files[0].id)
+            // Or a step before this one got no answer: saving this one would move the file's place past that step's
+            // pages, which would never be read.
+            finished.contains(job.files[0].id) || unanswered.contains(job.files[0].id)
         }
         return states
     }
@@ -249,6 +259,8 @@ public final class Indexer {
 
     /// What a job read and how long it took (its reading and its model's work, which overlap), for `MeasuredCosts`.
     private func measure(_ prepared: Prepared, seconds: Double) {
+        // Time spent waiting for text recognition that gave no answer isn't what a file costs.
+        guard !prepared.outcomes.values.contains(where: \.isUnanswered) else { return }
         switch prepared.payload {
         case .images(let screenshot, let ready):
             measured.add(screenshot ? "screenshot" : "image", units: Double(ready.count), seconds: seconds)
@@ -336,6 +348,12 @@ public final class Indexer {
     struct Outcome: Sendable {
         let state: String
         let detail: String?
+
+        /// Text recognition gave no answer for the file's words (`ExtractError.unanswered`), which settles nothing:
+        /// `commit` leaves the file as it was, pending or read part way, and a later pass reads it again. As `failed`
+        /// or `skipped` it would wait until the file changes, and as `done` it would be indexed for good without them.
+        static let unanswered = Outcome(state: "pending", detail: "\(ExtractError.unanswered)")
+        var isUnanswered: Bool { state == "pending" }
     }
 
     enum Payload: Sendable {
@@ -417,13 +435,17 @@ public final class Indexer {
                         let image = try ImageExtractor.prepare(url, maxPixel: screenshot ? 1536 : 1024,
                                                                minSide: options.minImageSide, to: folder,
                                                                png: screenshot)
-                        let ocr = screenshot ? OCR.text(ofImageAt: url) : ""
+                        var ocr = ""
+                        if screenshot {
+                            guard let read = OCR.text(ofImageAt: url) else { throw ExtractError.unanswered }
+                            ocr = read
+                        }
                         ready.append(ReadyImage(slot: slot, image: image, ocr: ocr))
                     } catch let error as ExtractError {
-                        if case .tooSmall = error {
-                            prepared.outcomes[slot] = Outcome(state: "skipped", detail: "\(error)")
-                        } else {
-                            prepared.outcomes[slot] = Outcome(state: "failed", detail: "\(error)")
+                        switch error {
+                        case .tooSmall: prepared.outcomes[slot] = Outcome(state: "skipped", detail: "\(error)")
+                        case .unanswered: prepared.outcomes[slot] = .unanswered
+                        default: prepared.outcomes[slot] = Outcome(state: "failed", detail: "\(error)")
                         }
                     }
                 }
@@ -464,9 +486,10 @@ public final class Indexer {
                 prepared.payload = .code(try CodeExtractor.read(url, options: options))
             }
         } catch let error as ExtractError {
-            if case .leftOut = error {
-                prepared.outcomes[0] = Outcome(state: "skipped", detail: "\(error)")
-            } else {
+            switch error {
+            case .leftOut: prepared.outcomes[0] = Outcome(state: "skipped", detail: "\(error)")
+            case .unanswered: prepared.outcomes[0] = .unanswered   // a PDF's page
+            default:
                 for slot in batch.indices where prepared.outcomes[slot] == nil {
                     prepared.outcomes[slot] = Outcome(state: "failed", detail: "\(error)")
                 }
@@ -487,11 +510,15 @@ public final class Indexer {
         let batch = prepared.batch
         let later = prepared.step != nil
         if let step = prepared.step, let outcome = prepared.outcomes[0] {
+            // Not the file's doing, so not a reason to stop reading it: nothing is saved, and it stays partial at
+            // this step.
+            if outcome.isUnanswered { return [(outcome.state, outcome.detail)] }
             return [try stopReading(batch[0], at: step.lowerBound, because: outcome.detail ?? outcome.state)]
         }
         var results = [(String, String?)](repeating: ("failed", nil), count: batch.count)
         for (slot, outcome) in prepared.outcomes {
-            try store.finish(batch[slot].id, state: outcome.state, detail: outcome.detail)
+            // An unanswered file's row isn't touched: it's pending, as if this run hadn't come to it.
+            if !outcome.isUnanswered { try store.finish(batch[slot].id, state: outcome.state, detail: outcome.detail) }
             results[slot] = (outcome.state, outcome.detail)
         }
         do {

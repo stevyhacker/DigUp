@@ -7,6 +7,9 @@ enum ExtractError: Error, CustomStringConvertible {
     case empty(String)
     /// Not for the index after all, once read (code that a program made, or that holds a private key).
     case leftOut(String)
+    /// Text recognition gave no answer for a picture the file's words come from (`TextRecognition.reader`). That says
+    /// nothing about the file, so it isn't settled: it stays as it was, and a later pass reads it.
+    case unanswered
 
     var description: String {
         switch self {
@@ -15,6 +18,7 @@ enum ExtractError: Error, CustomStringConvertible {
         case .locked: "password-protected"
         case .empty(let why): why
         case .leftOut(let why): why
+        case .unanswered: "text recognition gave no answer"
         }
     }
 }
@@ -30,7 +34,8 @@ enum ImageExtractor {
     }
 }
 
-/// Text recognition in screenshots, for keyword search only: Apple Vision on macOS, nothing elsewhere yet.
+/// Text recognition in screenshots, for keyword search only: Apple Vision on macOS (or the reader the app that hosts
+/// DigUpKit put in its place, `TextRecognition.reader`), nothing elsewhere yet.
 enum OCR {}
 
 /// PDF pages as text, or as pictures when they have little text (scans, slides): PDFKit on macOS, PDFium elsewhere.

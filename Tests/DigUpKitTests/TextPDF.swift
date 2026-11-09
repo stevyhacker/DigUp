@@ -65,8 +65,11 @@ import CoreText
 
 /// A PDF whose one page is a picture of `text` and nothing else, as a scanner makes it (macOS: the scans' OCR).
 enum ScannedPDF {
-    static func write(_ text: String, to url: URL) throws {
-        let width = 1240, height = 1754   // A4 at 150 dpi
+    /// `side`: a square page that many points a side, instead of A4.
+    static func write(_ text: String, to url: URL, side: Int? = nil) throws {
+        let points = side.map { (width: $0, height: $0) } ?? (width: 595, height: 842)
+        // 150 dpi, to the nearest pixel: 1240×1754 for A4.
+        let width = (points.width * 150 + 36) / 72, height = (points.height * 150 + 36) / 72
         guard let bitmap = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
         else { throw CocoaError(.fileWriteUnknown) }
@@ -78,7 +81,7 @@ enum ScannedPDF {
         bitmap.textPosition = CGPoint(x: 100, y: height - 200)
         CTLineDraw(line, bitmap)
         guard let image = bitmap.makeImage() else { throw CocoaError(.fileWriteUnknown) }
-        var page = CGRect(x: 0, y: 0, width: 595, height: 842)
+        var page = CGRect(x: 0, y: 0, width: points.width, height: points.height)
         guard let pdf = CGContext(url as CFURL, mediaBox: &page, nil) else { throw CocoaError(.fileWriteUnknown) }
         pdf.beginPDFPage(nil)
         pdf.draw(image, in: page)

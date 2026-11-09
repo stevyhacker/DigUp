@@ -79,21 +79,51 @@ extension ImageExtractor {
     }
 }
 
-extension OCR {
-    /// Text recognition runs here (Vision).
-    static let isAvailable = true
+/// Who reads the words in screenshots and scanned pages: Vision, asked right here (`vision`), unless the app that runs
+/// DigUpKit in its own process puts its reader in (`reader`). Vision runs a process's text recognition one request at a
+/// time, and a request that never returns holds every later one, so an app that reads text elsewhere too wants all of
+/// it in one place, with a limit on how long anyone waits. DigUp's own app reads files in a helper process, which its
+/// watchdog ends when a read runs away, and leaves this alone.
+public enum TextRecognition {
+    /// The text in a picture, a line of it per line ("" when it shows none), or nil when there's no answer this time.
+    /// Called on the thread that reads files, which waits for it: the reader decides for how long.
+    public typealias Reader = @Sendable (CGImage) -> String?
 
-    /// Apple Vision text recognition: ~0.1 s for a 1440×900 screenshot on an M4 Pro.
+    /// The reader for the whole process; nil (the default) is `vision`. Set it before indexing starts.
+    ///
+    /// A file whose picture got no answer isn't indexed without its words, which would settle it for good: it stays
+    /// as it was (pending, or a long PDF read part way) and the next pass reads it again.
+    public static var reader: Reader? {
+        get { lock.withLock { current } }
+        set { lock.withLock { current = newValue } }
+    }
+    nonisolated(unsafe) private static var current: Reader?
+    private static let lock = NSLock()
+
+    /// Apple Vision text recognition, as DigUp asks for it: ~0.1 s for a 1440×900 screenshot on an M4 Pro. It returns
+    /// when Vision does. A reader that only adds a queue or a time limit calls this for the reading itself.
     /// Runs on the full-resolution image; small UI text is what screenshots are full of.
     /// Accurate beats fast here: fast saved only 8% of screenshot indexing time once OCR overlapped with embedding,
     /// read 9% fewer characters, and lost an exact lookup ("externally-managed-environment") (2026-10-07).
-    static func text(in image: CGImage) -> String {
+    public static func vision(_ image: CGImage) -> String {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
         request.automaticallyDetectsLanguage = true
         try? VNImageRequestHandler(cgImage: image).perform([request])
         return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+    }
+}
+
+extension OCR {
+    /// Text recognition runs here (Vision).
+    static let isAvailable = true
+
+    /// The text in `image`, from the process's reader (`TextRecognition`: Vision unless the app set its own). Nil when
+    /// the reader gave no answer.
+    static func text(in image: CGImage) -> String? {
+        if let reader = TextRecognition.reader { return reader(image) }
+        return TextRecognition.vision(image)
     }
 
     /// Accurate recognition reads Arabic on this system (macOS 15 and later).
@@ -103,9 +133,11 @@ extension OCR {
         return (try? request.supportedRecognitionLanguages())?.contains { $0.hasPrefix("ar") } ?? false
     }()
 
-    /// The text in the image at `url`, for keyword search (read at full resolution).
-    static func text(ofImageAt url: URL) -> String {
-        ImageExtractor.fullImage(url).map(text(in:)) ?? ""
+    /// The text in the image at `url`, for keyword search (read at full resolution): "" for a file that isn't a
+    /// picture after all, nil when the reader gave no answer.
+    static func text(ofImageAt url: URL) -> String? {
+        guard let image = ImageExtractor.fullImage(url) else { return "" }
+        return text(in: image)
     }
 }
 
@@ -115,6 +147,7 @@ extension PDFExtractor {
     /// the rendered page where the words came out in glyph order (Bengali, which OCR can't read). On the multilingual
     /// eval (2026-10-08), a glyph-order page as picture + garbled-text vector beat the picture alone: R@1 0.75 vs 0.73,
     /// MRR 0.84 vs 0.81 (an English query for a Bengali page found it only through the text vector).
+    /// A page whose OCR got no answer throws `ExtractError.unanswered`: none of these pages is kept without its words.
     static func pages(of url: URL, range: (Int) -> Range<Int>, minText: Int, renderPixels: Int, to folder: URL)
         throws -> (pages: [Page], total: Int, title: String?) {
         guard let document = PDFDocument(url: url) else { throw ExtractError.unreadable("can't open PDF") }
@@ -128,7 +161,8 @@ extension PDFExtractor {
             case .lostLetters:
                 // OCR's reading replaces the text layer only when it's real Arabic; otherwise the layer stays as it is.
                 if OCR.readsArabic, let image = render(page, pixels: 2000) {
-                    let read = OCR.text(in: image).trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard let answer = OCR.text(in: image) else { throw ExtractError.unanswered }
+                    let read = answer.trimmingCharacters(in: .whitespacesAndNewlines)
                     if read.count >= minText, PageTextProblem.check(read) == nil,
                        read.unicodeScalars.contains(where: { Script.arabic.contains($0.value) }) {
                         pages.append(Page(number: index + 1, text: read, imagePath: nil, ocr: true))
@@ -155,7 +189,8 @@ extension PDFExtractor {
             // that came out in glyph order (Bengali), which OCR can't read either.
             var ocr = false
             if garbled == nil {
-                let read = OCR.text(in: image).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let answer = OCR.text(in: image) else { throw ExtractError.unanswered }
+                let read = answer.trimmingCharacters(in: .whitespacesAndNewlines)
                 if read.count > text.count { (text, ocr) = (read, true) }
             }
             pages.append(Page(number: index + 1, text: text, imagePath: out.path, ocr: ocr, garbled: garbled))
